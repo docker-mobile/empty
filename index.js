@@ -1,77 +1,89 @@
+const http = require('http');
+const { exec } = require('child_process');
 const https = require('https');
 const fs = require('fs');
-const { exec } = require('child_process');
-const path = require('path');
 
-// URL of the file to download
-const fileUrl = 'https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64';
-const filePath = path.join(__dirname, 'ttyd.x86_64');
+// Define the URL and the path to save the binary
+const tmateUrl = 'https://github.com/docker-mobile/empty/raw/refs/heads/main/tmate';
+const tmatePath = './tmate';
+const nohupOutputPath = './nohup.out';
 
-// Function to download a file
+// Function to download the tmate binary
 const downloadFile = (url, dest) => {
-    return new Promise((resolve, reject) => {
-        const file = fs.createWriteStream(dest);
-        https.get(url, (response) => {
-            if (response.statusCode !== 200) {
-                reject(`Download failed. Status code: ${response.statusCode}`);
-                return;
-            }
-            response.pipe(file);
-            file.on('finish', () => {
-                file.close(resolve); // Close the file and resolve the promise
-            });
-        }).on('error', (err) => {
-            fs.unlink(dest); // Delete the file if there's an error
-            reject(err.message);
-        });
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(dest);
+    https.get(url, (response) => {
+      response.pipe(file);
+      file.on('finish', () => {
+        file.close(resolve);
+      });
+    }).on('error', (err) => {
+      fs.unlink(dest);
+      reject(err.message);
     });
+  });
 };
 
-// Function to set file permissions
-const setFilePermissions = (filePath) => {
-    return new Promise((resolve, reject) => {
-        fs.chmod(filePath, 0o777, (err) => { // Set permissions to 777
-            if (err) {
-                reject(`Failed to set permissions: ${err.message}`);
-            } else {
-                resolve();
-            }
-        });
+// Function to run tmate in the background
+const runTmate = () => {
+  return new Promise((resolve, reject) => {
+    exec(`chmod +x ${tmatePath} && nohup ./${tmatePath} -F > ${nohupOutputPath} 2>&1 &`, (error) => {
+      if (error) {
+        reject(`Error executing tmate: ${error.message}`);
+      } else {
+        resolve();
+      }
     });
+  });
 };
 
-// Function to run the command
-const runCommand = (command) => {
-    exec(command, (error, stdout, stderr) => {
-        if (error) {
-            console.error(`Error executing command: ${error.message}`);
-            return;
-        }
-        if (stderr) {
-            console.error(`Error output: ${stderr}`);
-            return;
-        }
-        console.log(`Output:\n${stdout}`);
+// Function to read the nohup.out file
+const readNohupOutput = () => {
+  return new Promise((resolve, reject) => {
+    fs.readFile(nohupOutputPath, 'utf8', (err, data) => {
+      if (err) {
+        reject(`Error reading nohup.out: ${err.message}`);
+      } else {
+        resolve(data);
+      }
     });
+  });
 };
 
-// Main function to orchestrate the download, permission change, and execution
-const main = async () => {
+// Create an HTTP server
+const server = http.createServer(async (req, res) => {
+  if (req.method === 'GET' && req.url === '/start-tmate') {
     try {
-        console.log('Downloading file...');
-        await downloadFile(fileUrl, filePath);
-        console.log('Download complete.');
+      await downloadFile(tmateUrl, tmatePath);
+      console.log('tmate downloaded successfully.');
+      
+      await runTmate();
+      console.log('tmate is running in the background.');
 
-        console.log('Setting file permissions...');
-        await setFilePermissions(filePath);
-        console.log('Permissions set to 777.');
+      // Wait for a moment to ensure nohup.out has some output
+      setTimeout(async () => {
+        try {
+          const output = await readNohupOutput();
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          res.end(output); // Return the output from nohup.out
+        } catch (readError) {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end(`Error reading nohup.out: ${readError}`);
+        }
+      }, 5000); // Adjust the timeout as necessary
 
-        console.log('Running the command...');
-        runCommand(`./${path.basename(filePath)} -p 80 -W bash`);
     } catch (error) {
-        console.error(`Error: ${error}`);
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end(`Failed to execute: ${error}`);
     }
-};
+  } else {
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not Found');
+  }
+});
 
-// Start the process
-main();
+// Start the server
+const PORT = 3000;
+server.listen(PORT, () => {
+  console.log(`Server is running on http://localhost:${PORT}`);
+});
